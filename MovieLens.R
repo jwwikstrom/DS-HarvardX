@@ -1,0 +1,207 @@
+#############################################################
+# Create edx set, validation set, and submission file
+#############################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate")
+if(!require(recommenderlab)) install.packages("recommenderlab")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+# Learners will develop their algorithms on the edx set
+# For grading, learners will run algorithm on validation set to generate ratings
+validation_rating <- validation$rating
+validation <- validation %>% select(-rating)
+
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
+
+edx_test <- edx[test_index,]
+edx_train <- edx[-test_index,]
+
+rm(test_index, movielens, edx,dl, ratings, movies, temp, removed)
+
+edx_train <- edx_train %>% 
+  mutate(date = as_datetime(timestamp)) %>% 
+  select(-timestamp)
+
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+ROUND_TO_RATING <- function(rating){
+  0.5*round(rating/0.5)
+}
+# Plot movie bias
+
+# Plot user bias
+
+# Plot day bias
+edx_train %>% 
+  mutate(week=wday(round_date(date, unit = "day"))) %>% 
+  group_by(week) %>% 
+  summarise(mean_rating = mean(rating)) %>% 
+  ggplot(aes(x=week, y = mean_rating)) + geom_line()
+
+
+# Calculate estimation of mu
+mu_hat <- mean(edx_train$rating)
+
+# Calculate estimation of movie bias
+B_m_hat <- edx_train%>% 
+  group_by(movieId) %>% 
+  summarize(b_m_hat = sum(rating-mu_hat)/(n()+l))
+
+just_the_sum <- edx_train %>%
+  group_by(movieId) %>%
+  summarize(s = sum(rating - mu_hat), n_m = n())
+
+lambdas <- seq(2,4,1)
+lambda_m <- 3
+lambda_u <- 10
+#rmses <- sapply(lambdas, function(lambda){
+
+  B_m_hat <- edx_train %>% 
+    group_by(movieId) %>% 
+    summarize(b_i_hat = sum(rating-mu_hat)/(n()+lambda_m))
+  
+  B_u_hat <- edx_train %>%
+    left_join(B_m_hat, by = 'movieId') %>%
+    group_by(userId) %>%
+    summarize(b_j_hat = sum(rating - mu_hat - b_i_hat)/(n()+lambda_u), n_05 = sum(rating%%1==0.5), n = n())
+  
+  
+  predicted_ratings <- edx_train %>%
+    left_join(B_m_hat, by = 'movieId') %>%
+    left_join(B_u_hat, by = 'userId') %>%
+    mutate(pred_rating = ifelse(n_05==0,round(mu_hat + b_i_hat + b_j_hat),mu_hat + b_i_hat + b_j_hat)) %>%
+    .$pred_rating
+  
+  predicted_ratings[predicted_ratings>5] <- 5
+  predicted_ratings[predicted_ratings<0.5] <- 0.5
+  
+  
+  mean(edx_train$rating==ROUND_TO_RATING(predicted_ratings))
+  
+  RMSE(edx_train$rating,predicted_ratings)
+  
+  
+#})
+  
+  y <- edx_train %>%
+    mutate(res = ifelse(is.na(rating),0, rating - predicted_ratings)) %>%
+    group_by(movieId) %>%
+    filter(n()>50) %>%
+    ungroup() %>%
+    group_by(userId) %>%
+    filter(n()>200) %>%
+    ungroup() %>%
+    select(userId,movieId,res) %>%
+    spread(movieId,res) %>%
+    as.matrix()
+  
+y_svd <- funkSVD(y)
+
+errors <- edx %>%
+  mutate(error = rating - ROUND_TO_RATING(predicted_ratings)) %>%
+  filter(error == -0.5)
+  
+hist(errors$error)
+
+# test
+B_M_T <- edx %>%
+  mutate(year = year(date)) %>%
+  group_by(movieId, year) %>%
+  summarize(b_i_t = mean(rating - mu_hat))
+
+n_05 <- edx %>%
+  group_by(userId) %>%
+  filter(n()>0) %>% 
+  summarize(n_05 = sum(rating%%1==0.5))
+
+
+
+# Calculate estimation of user bias
+lambda_u <- 3
+B_u_hat <- edx %>%
+  left_join(B_m_hat, by = 'movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u_hat = sum(rating - mu_hat - b_m_hat)/(n()+lambda_u))
+
+
+
+# # Matrix with user as row and movie as col 
+# ratings <- edx %>% 
+#   group_by(movieId) %>%
+#   filter(n() > 100) %>% 
+#   ungroup() %>%
+#   group_by(userId) %>%
+#   filter(n() > 50) %>%
+#   select(userId,movieId,rating) %>% 
+#   spread(movieId,rating) %>% 
+#   as.matrix()
+# 
+# 
+# X_svd <- svd(X)
+# 
+# model_knn <- train(X,Y,method = "knn")
+
+# Estimates
+Y_hat <- edx %>%
+  left_join(B_m_hat, by = 'movieId') %>%
+  left_join(B_u_hat, by = 'userId') %>%
+  mutate(y_hat = mu_hat + b_m_hat + b_u_hat ) %>%
+  .$y_hat
+
+rmse <- RMSE(edx$rating,Y_hat)
+
+# Validation estimates
+Y_hat <- validation %>%
+  left_join(B_m_hat, by = 'movieId') %>%
+  left_join(B_u_hat, by = 'userId') %>%
+  mutate(y_hat = mu_hat + b_m_hat + b_u_hat ) %>%
+  .$y_hat
+
+# Ratings will go into the CSV submission file below:
+
+write.csv(validation %>% select(userId, movieId) %>% mutate(rating = Y_hat ),
+          "submission.csv", na = "", row.names=FALSE)
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+
