@@ -80,97 +80,112 @@ edx %>%
 mu_hat <- mean(edx$rating)
 
 # Create test and train set
-test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
-edx_test <- edx[test_index,]
-edx_train <- edx[-test_index,]
+# test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
+# edx_test <- edx[test_index,]
+# edx_train <- edx[-test_index,]
 
-lambdas_m <- seq(1,11,2)
-lambdas_u <- seq(1,11,2)
-lambda_m <- 3
-lambda_u <- 10
-#rmses <- sapply(lambdas, function(lambda){
+# Create vectors lambdas_m and lambdas_u containing the values of lambda_m and lambda_u to test 
+lambdas_m <- seq(3,7,1)
+lambdas_u <- seq(4,7,1)
 
-rmses <- sapply( lambdas_m, function(l_m){sapply(lambdas_u, function(l_u){
-  B_m_hat <- edx %>% 
-    group_by(movieId) %>% 
-    summarize(b_i_hat = sum(rating-mu_hat)/(n()+l_m))
-  
-  B_u_hat <- edx %>%
-    left_join(B_m_hat, by = 'movieId') %>%
-    group_by(userId) %>%
-    summarize(b_j_hat = sum(rating - mu_hat - b_i_hat)/(n()+l_u))
-  
-  
-  predicted_ratings <- edx_test %>%
-    left_join(B_m_hat, by = 'movieId') %>%
-    left_join(B_u_hat, by = 'userId') %>%
-    mutate(pred_rating = mu_hat + b_i_hat + b_j_hat) %>%
-    .$pred_rating
-  
-  predicted_ratings[predicted_ratings>5] <- 5
-  predicted_ratings[predicted_ratings<0.5] <- 0.5
-  RMSE(predicted_ratings,edx_test$rating)
-})})
+#K fold cross-validation, add the fold number to edx
+n_folds <- 5
+edx <- edx %>%
+  mutate(K_fold = createFolds(y = edx$rating, k = n_folds, list = FALSE))
 
-lambda_m <- which(rmses==min(rmses), arr.ind = TRUE)[1]
-lambda_u <- which(rmses==min(rmses), arr.ind = TRUE)[2]
+# For each combination of lambda_m and lambda_u, perform cross-validation with k = n_folds and calculate mean RMSE for those folds
+Folds <- seq(1,n_folds)
+rmses <- sapply( lambdas_m, 
+                 function(l_m){sapply(lambdas_u, 
+                                      function(l_u){mean(sapply(Folds,
+                                                           function(k){
+                                                             
+                                                             B_m_hat <- edx %>% 
+                                                               filter(K_fold != k) %>%
+                                                               group_by(movieId) %>% 
+                                                               summarize(b_i_hat = sum(rating-mu_hat)/(n()+l_m))
+                                                             
+                                                             B_u_hat <- edx %>%
+                                                               filter(K_fold != k) %>%
+                                                               left_join(B_m_hat, by = 'movieId') %>%
+                                                               group_by(userId) %>%
+                                                               summarize(b_j_hat = sum(rating - mu_hat - b_i_hat)/(n()+l_u))
+                                                             
+                                                             
+                                                             predicted_ratings <- edx %>%
+                                                               filter(K_fold == k) %>%
+                                                               left_join(B_m_hat, by = 'movieId') %>%
+                                                               left_join(B_u_hat, by = 'userId') %>%
+                                                               mutate(pred_rating = mu_hat + b_i_hat + b_j_hat) %>%
+                                                               .$pred_rating
+                                                             
+                                                             # predicted_ratings[predicted_ratings>5] <- 5
+                                                             # predicted_ratings[predicted_ratings<0.5] <- 0.5
+                                                             RMSE(predicted_ratings,edx %>% filter(K_fold == k) %>% .$rating)
+                                                             
+                                                           }))
+                                      })
+                 })
 
-# Clean test and train set
-rm(edx_train, edx_test, test_index)
+lambda_m <- lambdas_m[which(rmses==min(rmses), arr.ind = TRUE)[2]]
+lambda_u <- lambdas_u[which(rmses==min(rmses), arr.ind = TRUE)[1]] 
 
 # Estimate using entire edx set
 # Movie bias
-  B_m_hat <- edx %>% 
-    group_by(movieId) %>% 
-    summarize(b_i_hat = sum(rating-mu_hat)/(n()+lambda_m))
-  
+B_m_hat <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i_hat = sum(rating-mu_hat)/(n()+lambda_m))
+
 # User bias
-  B_u_hat <- edx %>%
-    left_join(B_m_hat, by = 'movieId') %>%
-    group_by(userId) %>%
-    summarize(b_j_hat = sum(rating - mu_hat - b_i_hat)/(n()+lambda_u))
+B_u_hat <- edx %>%
+  left_join(B_m_hat, by = 'movieId') %>%
+  group_by(userId) %>%
+  summarize(b_j_hat = sum(rating - mu_hat - b_i_hat)/(n()+lambda_u))
 
 # Predict on edx set
-  predicted_ratings <- edx %>%
-    left_join(B_m_hat, by = 'movieId') %>%
-    left_join(B_u_hat, by = 'userId') %>%
-    mutate(pred_rating = mu_hat + b_i_hat + b_j_hat) %>%
-    .$pred_rating
-  
-  predicted_ratings[predicted_ratings>5] <- 5
-  predicted_ratings[predicted_ratings<0.5] <- 0.5
-  
-  predicted_validation <- validation %>%
-    left_join(B_m_hat, by = 'movieId') %>%
-    left_join(B_u_hat, by = 'userId') %>%
-    mutate(pred_rating = mu_hat + b_i_hat + b_j_hat) %>%
+predicted_ratings <- edx %>%
+  left_join(B_m_hat, by = 'movieId') %>%
+  left_join(B_u_hat, by = 'userId') %>%
+  mutate(pred_rating = mu_hat + b_i_hat + b_j_hat) %>%
   .$pred_rating
-  
-  predicted_validation[predicted_validation>5] <- 5
-  predicted_validation[predicted_validation<0.5] <- 0.5
-  
-  RMSE(validation$rating , predicted_validation)
-  
-  RMSE(edx$rating,predicted_ratings)
-  
-  
-  y <- edx %>%
-    mutate(res = rating - predicted_ratings) %>%
-    group_by(movieId) %>%
-    filter(n()>200) %>%
-    ungroup() %>%
-    group_by(userId) %>%
-    filter(n()>400) %>%
-    ungroup() %>%
-    select(userId,movieId,res) %>%
-    spread(movieId,res) %>%
-    as.matrix()
-  
-  rownames(y) <- y[,1]
-  y <- y[,-1]
-  
+
+# predicted_ratings[predicted_ratings>5] <- 5
+# predicted_ratings[predicted_ratings<0.5] <- 0.5
+
+# predicted_validation <- validation %>%
+#   left_join(B_m_hat, by = 'movieId') %>%
+#   left_join(B_u_hat, by = 'userId') %>%
+#   mutate(pred_rating = mu_hat + b_i_hat + b_j_hat) %>%
+#   .$pred_rating
+# 
+# predicted_validation[predicted_validation>5] <- 5
+# predicted_validation[predicted_validation<0.5] <- 0.5
+# 
+# RMSE(validation$rating , predicted_validation)
+# 
+# RMSE(edx$rating,predicted_ratings)
+
+# Spread edx into matrix y, of residuals res, with users as rows and movies as coloumns
+y <- edx %>%
+  mutate(res = rating - predicted_ratings) %>%
+  group_by(movieId) %>%
+  filter(n()>200) %>%
+  ungroup() %>%
+  group_by(userId) %>%
+  filter(n()>400) %>%
+  ungroup() %>%
+  select(userId,movieId,res) %>%
+  spread(movieId,res) %>%
+  as.matrix()
+
+# Convert first coloumn to rownames (first coloumn is userId)
+rownames(y) <- y[,1]
+y <- y[,-1]
+
+# Perform matrix factorization to find U and V that estimates filled y
 y_svd <- funkSVD(y, verbose = TRUE, k=5, max_epochs = 300)
-  
+
+# 
 r <- y_svd$U %*% t(y_svd$V)
 hist(abs(y-r))
 
