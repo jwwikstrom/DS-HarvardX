@@ -1,0 +1,49 @@
+---
+title: "Movielens Project Submission"
+author: "Johan Wikström"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  pdf_document:
+    df_print: kable
+    number_sections: true
+---
+
+
+\centering
+\raggedright
+\newpage
+\tableofcontents
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\pagebreak
+
+# Introduction
+
+
+# Analysis and Methods
+
+\begin{align}
+  \hat{r} = \hat{\mu}
+\end{align}
+
+
+\begin{align}
+  \hat{r_i,j} = \hat{\mu} + \hat{b_i} + \hat{b_j}
+\end{align}
+
+\begin{align}
+  \hat{R} = U*V^t
+\end{align}
+\begin{align}
+  \hat{r_i,j} = \hat{\mu} +  \hat{b_i} + \hat{b_j} + \sum\limits{n=1}^N\sum\limits{m=1}^M{u_i,n*v_i,m}
+\end{align}
+
+# Results
+
+# Conclusion and Discussion
+
+
+

@@ -1,0 +1,343 @@
+---
+title: "Movielens Project Submission"
+author: "Johan Wikström"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+header-includes:
+   - \usepackage{longtable}
+output:
+  pdf_document:
+    df_print: kable
+    number_sections: yes
+  html_document:
+    df_print: paged
+---
+
+
+\centering
+\raggedright
+\newpage
+\tableofcontents
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = "../../R data/DS Harvard")
+if(!exists("R_svd")){load("~/R data/DS Harvard/Matrixfactorization.RData")}
+if(!exists("svd_prediction")){load("~/R data/DS Harvard/predictions.RData")}
+if(!exists("edx")){load("~/R data/DS Harvard/edx.RData")}
+library(ggcorrplot)
+library(reshape2)
+library(tidyverse)
+library(xtable)
+library(ggplot2)
+library(dplyr)
+options(xtable.comment = FALSE)
+knitr::opts_chunk$set(comment = NA)
+```
+
+\pagebreak
+
+# Introduction
+Trying to estimate the rating a specific individual will give a specific movie is a important but difficult task. The purpose of the project described in this report is to attack this task; using rating data provided by Netflix, and methods learned in the Data Science Professional Certificate Program held by HarvardX on edx.org. 
+
+The data provided by Netflix consists of ten million rows, where each row represents a rating made by a specific user for a specific movie. The rows consists of: the user who gave the rating, the movie rated, rating given, movie title, genres of the movie, and the date the rating was given. A small sample of the data can be seen in the table below.
+
+```{r, results='asis'}
+xtable <- function(x, ...) {
+   for (i in which(sapply(x, function(y) !all(is.na(match(c("POSIXt","Date"),class(y))))))) x[[i]] <- as.character(x[[i]])
+   xtable::xtable(x, ...)
+}
+edx$movieId <- as.integer(edx$movieId)
+edx$date <- as.Date(edx$date)
+print(xtable(head(edx), type = .latex), include.rownames=FALSE)
+```
+
+The first step taken to approach the problem was to create a simple model. Then, analyse the errors made by the model to find trends, patterns, and model flaws. Methods to leverage these trends and patterns was then incrementally integrated into the model, evolving it, making it more complete and flaws could be minimized. Examples of methods used to minimize flaws and leverage trends and patterns are K-fold cross validation to fit model parameters, Regularization to constrain total variability, and Matrix Factorization to model features. 
+
+To measure the performance of the model, the random mean square error, further denoted as RMSE; Was chosen by the course staff. The final model reached an RMSE of $0.79$, and consisted of a mean constant, a regularized user bias, a regularized movie bias, and a set of forty features.
+
+# Analysis and Methods
+This chapter provides a brief statistical analysis of the data, followed by more in depth analysis to explore and find possibilities to improve the model. With each finding, the method used to address that finding is also presented.
+
+The data set provided by Netflix consists of ratings given a movie by a user. The total data set consisted of 10 000 054 ratings given to 10 677 unique movies by 69 878 unique users.
+
+```{r}
+
+
+
+
+```
+
+The ratings can be represented as a matrix $Y$ where each row is a user, each column is a movie, and the cell values are the ratings. 
+
+\begin{align}
+  Y = \begin{bmatrix}   y_{1,1} & y_{1,2} & \dots  & y_{1,I} \\
+    y_{2,1} & y_{2,2}  & \dots  & y_{2,I} \\
+    \vdots & \vdots  & \ddots & \vdots \\
+    y_{J,1} & y_{J,2}  & \dots  & y_{J,I}\end{bmatrix},
+\end{align}
+
+where $y_{j,i}$ is the rating given for movie $i$ by user $j$. In this representation, the matrix $Y$ is very sparse, with only about 1.3% of the matrix being known. 
+
+The goal is then trying to estimate unknown ratings $\hat y_{j,i}$ that minimizes the RMSE
+
+\begin{align}\label{eq:RMSE}
+  \sqrt{ \frac{1}{N}\sum\limits_{J,I}(y_{j,i}-\hat y_{j,i})^2}.
+\end{align}
+
+A very simple model, and a good place to start, is to estimate an unknown rating to be the mean rating for every movie and user pair.
+
+\begin{align}\label{model1}
+  \hat{y}_{j,i} = \hat{\mu},
+\end{align}
+
+where $\hat{\mu}$ is the mean of all ratings. If we examine the mean errors made for each movie, $\hat\mu-y_{j,i}$, shown in the histogram below. We can see that some movies tends to be given higher ratings than the average and some tends to be given lower ratings. 
+
+```{r}
+mu_hat <- mean(edx$rating)
+B_i_hat <- edx %>% group_by(movieId) %>% 
+            summarize(b_i_hat = mean(rating-mu_hat),number_of_ratings=n()) %>%
+            arrange(b_i_hat)
+B_i_hat %>% ggplot(aes(x=b_i_hat)) + geom_histogram(binwidth = 0.1) + xlab("mean error per movie")
+
+```
+
+This pattern is quite intuitive, some movies are good and some are bad. Leading to good movies being rated higher compared to bad movies on average. To take this pattern into account, a movie bias term is added to the simple model
+
+\begin{align}\label{model2}
+  \hat{y}_{j,i} = \hat{\mu} + \hat{b}_i,
+\end{align}
+
+where $\hat{b}_i$ is the movie bias estimate for movie $i$. The movie bias can be estimated using least squares, in this case however it can be calculated as the mean error made by the simple model (\ref{model1}) for each movie for each movie $i$:
+
+\begin{align}\label{biEstimate}
+  \hat{b}_i = \frac{1}{n_i} \sum\limits_{j=1}^{n_i}{y_{j,i}-\hat{\mu}},
+\end{align}
+
+where $n_i$ is the number of ratings for movie $i$. If we then further examine the errors made by our model with movie biases (\ref{model2}), we see a similar pattern for users which is visualized in the histogram below.
+
+```{r}
+mu_hat <- mean(edx$rating)
+B_j_hat <- edx %>% 
+      left_join(B_i_hat, by = 'movieId') %>% 
+      group_by(userId) %>% 
+      summarize(b_j_hat = mean(rating - mu_hat - b_i_hat), number_of_ratings=n()) %>%
+      arrange(b_j_hat)
+B_j_hat %>% ggplot(aes(x=b_j_hat)) + geom_histogram(binwidth = 0.1) + xlab("mean error per user")
+```
+
+It seems that some users tend to give movies higher ratings then the average, while some tend to give lower ratings. To take this user bias into account, we add a user bias term, $\hat{b}_j$ to the model (\ref{model2}).
+
+\begin{align}\label{model3}
+  \hat{y}_{j,i} = \hat{\mu} + \hat{b}_i + \hat{b}_j.
+\end{align}
+
+The user bias can be estimated using least squares minimization, which will result in the mean error for every user with the movie bias model (\ref{model2}).
+
+\begin{align}\label{biEstimate}
+  \hat{b}_j = \frac{1}{n_j} \sum\limits_{i=1}^{n_j}{y_{j,i}-\hat{\mu}-\hat{b}_i},
+\end{align}
+
+
+where $n_j$ is number of ratings made by user $j$.
+
+By estimating $b_i$ and $b_j$ using least squares, the mean for each movie $i$ and user $j$ respectively, the bias estimates will become susceptible to noisy estimates due to a low number of observations for some movies and user. 
+
+For example, if a movie has been rated few times, then each of those ratings will have a large influence on the estimates made for that movie. Then, when we estimate the rating for the same movie but from another user, that estimate will be highly influenced by just a few ratings and probably be far from the true bias due to the noise introduced. The noise is very apparent if a movie has only been rated once, or a user only has rated once. Then, the bias estimate will be error made by that single observation, for example if movie $i$ has only been rated by user 250 then the bias will be estimated as $b_i = y_{i,j}- \hat\mu$.
+
+This effect can be seen if we look at the largest estimated movie biases, which can be seen in the table \ref{fig:moviebias1}. We see that both the largest, positive and negative, biases belong to movies with few ratings.
+
+
+```{r, results='asis'}
+print(xtable(rbind(head(B_i_hat,3),tail(B_i_hat,3)), type = .latex, caption = "Largest, negative and postive, movie biases", label = "fig:moviebias1"), include.rownames=FALSE)
+```
+
+
+
+The same noisy estimates can be seen for users where users with few rated movies have the largest biases, shown in the table  \ref{fig:userbias1}  below.
+
+
+
+```{r, results='asis'}
+print(xtable(rbind(head(B_j_hat,3),tail(B_j_hat,3)), type = .latex, caption = "Largest, negative and postive, user biases", label = "fig:userbias1"), include.rownames=FALSE  )
+```
+
+The method used for handling these noisy estimates is regularization. Regularization aims at controlling the total variability of the movie biases $\sum_{j=1}^{n_i}\hat{b}_j^2$ by minimizing an equation that adds a penalty for large estimates instead of minimizing the least squares as we did in (\ref{biEstimate}) and (\ref{bjEstimate}). The function that will be minimized is very similar to the least squares:
+
+\begin{align}\label{eq:regMinF}
+  \frac{1}{N} \sum\limits_{j,i}(y_{j,i}-\hat{\mu}-\hat{b}_j-\hat{b}_i) + \lambda_j \sum\limits_{j} \hat{b}_j^2+ \lambda_i \sum\limits_{i}         \hat{b}_i^2 \Big),
+\end{align}
+
+where the first term is the regular least squares equation, and the second and third terms are penalties that gets larger when many bias estimates are large. $\lambda_i$ and $\lambda_j$ are constants for scaling the penalties for movies and users respectively.  
+
+Using calculus, we can derive that the movie biases and user biases that minimizes function (\ref{eq:regMinF}) are:
+
+\begin{align}
+  \hat{b}_i = \frac{1}{\lambda_I + n_j} \sum\limits_{u=1}^{n_j}{y_{u,i}-\hat{\mu}},
+\end{align}
+and
+\begin{align}
+  \hat{b}_j = \frac{1}{ \lambda_J + n_i} \sum\limits_{u=1}^{n_i}{y_{j,u}-\hat{\mu}-\hat{b}_i}.
+\end{align}
+
+Now, the next problem is to choose suitable values for $\lambda_i$ and $\lambda_j$. These constants will affect the resulting estimates, and the estimate can therefore be seen as a function of these constants, $\hat y_{j,i}(\lambda_i,\lambda_j)$. Our goal is then to determine which constants that minimize the estimated RMSE (\ref{eq:RMSE}). To minimize the RMSE, a simple grid method was used where a grid of different constant values, $\lambda_i = [3,4..,7]$ and $\lambda_j=[4,5..7]$, was constructed, and the RMSE estimate for each combination calculated.
+It is important to note that the RMSE we calculate and will attempt to minimize is an estimation of the true RMSE. To achieve a fair estimation of the true RMSE, K-fold cross validation, with five folds, was performed. That means that the training set was split into five equally large, non overlapping, random sets. With these sets, the RMSE estimations for the grid was calculated five times, each time with a different training and test set. Then, the mean RMSE for each combination of constants was calculated from the five optimizations, and the constants resulting in the lowest estimated mean RMSE was chosen. Which was $[\lambda_i=3,\lambda_j=5]$.
+
+Now, we have created a model (\ref{model2}), which takes into account the difference in movies and user. The next step would be to incorporate knowledge gained from the ratings given by a user, and the ratings received for a movie. Specifically, a users movie preference. For example, some users might like science-fiction movies, while some user might dislike science-fiction movies. In the same sense, users probably have preferences for a certain movie series, actors, or other more difficult attributes such as sceneries, soundtracks, or colors.
+
+To start, we define the true rating $y_{j,i}$ as the predicted rating $\hat y_{j,i}$ with an additional error, $r_{j,i}$
+
+\begin{align}
+ y_{j,i}  = \hat{y}_{j,i} + r_{j,i}.
+\end{align}
+
+We can then analyse the patterns in the errors made $r_{j,i}$. One way of confirming that there are unexplained patterns, is to examine the correlation between errors. For example, if we look just at the correlation between errors made for the ten Star Trek Movies and the same users. We should see a pattern if there exists a preference resulting in some users enjoying the Star Trek Movies more and some users dislike them. 
+
+In the heat map below, the Pearson correlation has been calculated between the ratings given to the Stark Trek Movies, only user that has rated five or movies was included. A high positive correlation can be seen across all movies, which supports the argument above regarding the existence of preferences. 
+
+
+```{r}
+star_treck_cor <- edx  %>% 
+  filter(grepl("Star Trek", title)) %>% 
+  group_by(userId) %>% 
+  filter(n()>=5) %>% 
+  ungroup %>%
+  left_join(B_i_hat, by = 'movieId') %>%
+  left_join(B_j_hat, by = 'userId') %>%
+  mutate(error = rating - mu_hat - b_i_hat - b_j_hat) %>%
+  select(userId,title,error) %>% 
+  spread(title,error) %>% 
+  select(-userId) %>% 
+  cor(use = "na.or.complete") %>% 
+  melt()
+
+star_treck_cor %>% ggplot(aes(x=Var1,y=Var2,fill=value)) + 
+  geom_tile() + 
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(angle = 45, vjust = 1, hjust = 1, size = 6),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 6)) +
+  scale_fill_gradient2(low = "blue", 
+                       high = "red", 
+                       mid = "white", 
+                       midpoint = 0, 
+                       limit = c(-1,1), 
+                       space = "Lab",  
+                       name="Pearson\nCorrelation")
+  
+
+```
+
+To find these preferences, a method called Funk SVD was used, which uses matrix factorization to estimate the errors $r_{j,i}$. First, we  represent the errors as a matrix $R$
+
+\begin{align}
+  R = \begin{bmatrix}   r_{1,1} & r_{1,2} & \dots  & r_{1,I} \\
+    r_{2,1} & r_{2,2}  & \dots  & r_{2,I} \\
+    \vdots & \vdots  & \ddots & \vdots \\
+    r_{J,1} & r_{J,2}  & \dots  & r_{J,I}\end{bmatrix}\in \mathbb{R}^{J\times I},\text{ where } r_{j,i}=y_{j,i}-\hat{\mu}-\hat{b}_i-\hat{b}_j.
+\end{align}
+
+The rows represents each user and the columns each movie, each cell then contains the error made or missing values for movies not yet rated by certain users. The Funk SVD method tries to estimate the complete matrix, $\hat R$ using two lower dimensional matrices, $U$ and $V$:
+
+\begin{align}
+  \hat{R} = U*V^t,
+\end{align}
+
+where $\;U\in \mathbb{R}^{J\times N}$, $\;V\in \mathbb{R}^{I\times N}$, and $N$ is the number of preferences or so called features calculated. Each user has $N$ number of user latent factors, which will be estimated, defining that user's preferences. Similarly each movie has $N$ number of movie latent factor, defining that movie's features. The two matrices can be calculated using gradient decent.
+When $U$ and $V$ are calculated, we can estimate the errors $\hat r_{j,i}$ by multiplying theses two matrices:
+
+\begin{align}
+  \hat r_{j,i} = \sum\limits_{n=1}^N{u_{j,n}*v_{n,i}},
+\end{align}
+
+which results in the error estimation matrix $\hat R$. Due to the large size of $R$, a couple of GBs, the calculation of $U$ and $V$ was very memory and time consuming. The calculation was run on an AWS server with 32 GB of ram and took around 36 hours to complete. 
+
+Note that $R$ is incomplete with missing cell values while $\hat R$ is complete. Giving us the opportunity to leverage the knowledge about a user's preferences and a movie's features to more accurately estimate the rating a user will give each movie. 
+
+
+Applying this knowledge, we define the final model as:
+
+\begin{align}\label{eq:modelFinal}
+  \hat{y}_{j,i} = \hat{\mu} +  \hat{b}_i + \hat{b}_j + \sum\limits_{n=1}^N{u_{j,n}*v_{n,i}},
+\end{align}
+
+which uses the estimated mean, movies bias, user bias, user preferences, and movie features.
+
+# Results
+
+Applying the final model (\ref{eq:modelFinal}), on the validation set resulted in an RMSE of 0.79. Summary statistics of the model parameters are shown below. In table \ref{table:mu} is the value of $\hat \mu$.
+
+```{r, results='asis'}
+
+print(xtable(data.frame(mu_hat, row.names = "$\\hat \\mu$"), type = .latex, caption = "$\\hat \\mu$",label = "table:mu") ,sanitize.text.function=function(x){x}, include.colnames = FALSE)
+
+```
+
+Summary statistics for the movie and user biases, $\hat B_i$ and $\hat B_j$, in table \ref{table:movieUserBias}.The user och movie biases have very similar statistics, their mins and maxes are similar, the same for the percentiles. However, the movies biases seem to be distributed slightly to the negative numbers while the user biases are close to zero, slightly positive.  
+
+```{r, results='asis'}
+B_i_hat_stats <- B_i_hat %>% summarize(mean = mean(b_i_hat), 
+                                       median = median(b_i_hat), 
+                                       '25th percentile' = quantile(b_i_hat, 0.25), 
+                                       '75th percentile' = quantile(b_i_hat, 0.75),
+                                       max = max(b_i_hat),
+                                       min = min(b_i_hat)) 
+B_j_hat_stats <- B_j_hat %>% summarize(mean = mean(b_j_hat), 
+                                       median = median(b_j_hat), 
+                                       '25th percentile' = quantile(b_j_hat, 0.25), 
+                                       '75th percentile' = quantile(b_j_hat, 0.75),
+                                       max = max(b_j_hat),
+                                       min = min(b_j_hat)) 
+
+print(xtable(rbind("$\\hat B_i$" = B_i_hat_stats, "$\\hat B_j$" = B_j_hat_stats), type = .latex, caption = "Statistics of the final user movie and user biases",label = "table:movieUserBias") ,sanitize.text.function=function(x){x})
+
+```
+
+Statistics of the movie features in matrix $V$ in table \ref{table:VStats}. Overall, there seems to be no statistics that stands out. The first set of features seems to negative ones. The last set seem to be slightly positive. 
+
+```{r, results='asis'}
+
+V_stats <- data.frame(R_svd$V) %>% 
+  setNames(sapply(1:40, function(x){paste("Feature" ,x)} )) %>% 
+  melt(variable.name = "Feature", id.vars = NULL) %>%
+  group_by(Feature) %>%
+  summarise(mean = mean(value), 
+            median = median(value),
+            '25th percentile' = quantile(value, 0.25), 
+            '75th percentile' = quantile(value, 0.75),
+            max = max(value),
+            min = min(value)) 
+
+print(xtable(V_stats, type = .latex, caption = "Statistics of the movie features",label = "table:VStats") ,sanitize.text.function=function(x){x}, tabular.environment = 'longtable', floating = FALSE, include.rownames = FALSE)
+
+```
+
+And finally, statistics of the user preferences in matrix $U$ in table \ref{table:UStats}. All preferences seem to be slightly positive, most of them centered around 0. An interesting statistic that stands out are the maxes. For the first set of preferences, the max is very large. This can mean that some user have a very strong preferences in regards to the first set of features. 
+
+```{r, results='asis'}
+
+U_stats <- data.frame(R_svd$U) %>% 
+  setNames(sapply(1:40, function(x){paste("Preference" ,x)} )) %>% 
+  melt(variable.name = "Preference", id.vars = NULL) %>%
+  group_by(Preference) %>%
+  summarise(mean = mean(value), 
+            median = median(value),
+            '25th percentile' = quantile(value, 0.25), 
+            '75th percentile' = quantile(value, 0.75),
+            max = max(value),
+            min = min(value)) 
+
+print(xtable(U_stats, type = .latex, caption = "Statistics of the user preferences",label = "table:UStats") ,sanitize.text.function=function(x){x}, tabular.environment = 'longtable', floating = FALSE, include.rownames = FALSE)
+
+```
+
+# Conclusion and Discussion
+
+In regards of the resulting RMSE, I am very pleased. The data is complex to create model against due to it's seemingly non-informative nature. And I think the method used in this project have managed to capture, in a somewhat good way, the information that can be extracted from the data, namely the individual users preference and each movies features. 
+
+I could however been more efficient in some of the methodology. For example I believe the use of cross validation to estimate $\lambda_j$ and $\lambda_i$ was a bit overkill since the sheer amount of data might have been sufficient to get fairly good estimates. In that sense, another optimization method could have been applied to fine tune the value of these parameters. Also, more time could have been spent on investigating the results och matrix factorization. For example, it would have been interesting to see the effect different number of latent factors would have made to the results. And an attempt to explain the preference and feature the latent factors represented.
+
+In regards of scalability, I think this method is applicable since the re-calibration of the matrix factorization, which required most time and computing power, is easier than the initial calculation. This since users and movies can be bound into the existing vectors $U$ and $V$.
+
+
+
+
