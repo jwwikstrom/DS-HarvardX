@@ -1,0 +1,150 @@
+---
+title: "Choose Your Own Project Submission"
+author: "Johan Wikström"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+header-includes:
+   - \usepackage{longtable}
+   - \usepackage{multirow}
+output:
+  pdf_document:
+    df_print: kable
+    number_sections: yes
+  html_document:
+    df_print: paged
+---
+
+
+\centering
+\raggedright
+\newpage
+\tableofcontents
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir = "../../R data/DS Harvard")
+if(!exists("paysim")){load("~/R data/DS Harvard/paysim.RData")}
+if(!exists("gbm_fit")){load("~/R data/DS Harvard/gbm_fit.RData")}
+if(!exists("y_hat")){load("~/R data/DS Harvard/predictionsOwnProject.RData")}
+library(ggcorrplot)
+library(reshape2)
+library(tidyverse)
+library(xtable)
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(gbm)
+options(xtable.comment = FALSE)
+knitr::opts_chunk$set(comment = NA)
+```
+
+\pagebreak
+
+# Introduction
+For my own project I have choosen to dive into the world of fraud detection. Fraud detection is a very important business domain in which macine learning can be very helpful. In this domain, the data size is large, speeds a high, and there is dependancies between transactions.Despite the amount of data, creating good models that identify fraudulent behaviour is difficult, this because the proportion of fraudulent transaction usually is very low and very similar to non-fraudulent transaction. 
+
+I have choosen the paysim dataset from the Kaggle website. The dataset can be found here: https://www.kaggle.com/ntnu-testimon/paysim1. The dataset is a synthetic financial dataset for fraud detection. It is created from aggregated from an african mobile money service and is created to resemble normal transaction operations.
+
+The dataset is a timeseries of transactions spanning over one month. The number of transaction is ~6.4 million and the proportion of fraud is only 0.12%. The dataset i made up of eleven attributs:
+
+\begin{itemize}
+  \item step - maps a unit of time in the real world. In this case 1 step is 1 hour of time.
+  \item type - CASH-IN, CASH-OUT, DEBIT, PAYMENT and TRANSFER.
+  \item amount - amount of the transaction in local currency.
+  \item nameOrig - customer who started the transaction
+  \item oldbalanceOrg - initial balance before the transaction
+  \item newbalanceOrig - new balance after the transaction
+  \item nameDest - customer who is the recipient of the transaction
+  \item oldbalanceDest - initial balance recipient before the transaction.
+  \item newbalanceDest - new balance recipient after the transaction.
+  \item isFraud - This is the transactions made by the fraudulent agents inside the simulation.
+  \item isFlaggedFraud - The business model aims to control massive transfers from one account to another and flags illegal attempts. 
+\end{itemize}
+
+In this project, an analysis of the dataset and the fraudulent transactions is made. An important finding is that a majority of the fraudulent transaction is made in two steps: 1, Move the balance from one account to another; 2, emediately cash out the entire transaction. From this we are able to find fraudulent cash outs by looking and transfers made in the same hour and flag these two transactionos as suspected fraudulent transaction. After, a gradient boosting model was trained, with optimal paremeters estimated using  k-fold cross validation, and since we have alot of date, downsampling was applied to handle the inbalance in the dataset. To handle the imbalance further, the metric we want to minimize is the F1 score. 
+
+# Analysis and Methods
+The first thing I did was to remove the isFlaggedFraud attribute since the attribute I want to predict is the IsFraud flag. Then, I looked at which steps we have fraudulent behaviour.
+
+```{r, fig.width=7,fig.height=4}
+paysim %>% group_by(step) %>% summarize(n = n()) %>% ggplot(aes(x = step, y = n)) + geom_step() + labs(x = "Time step", y = "Number of fraudulent transactions", title = "Number of fraudulent transaction over time")
+
+```
+
+As we can see, there are alot of spikes of fraudulent transaction for the earlier steps, and later, the fradulent behaviour is more stable. Using this information, I split the data into training and validation set at a specific time step. This step was choosen to make the split as close to 80%-20% as possible. This splitting the data in this way was important since we are using a time series so using transaction from the future in training is not recommended. 
+
+The next step taken was to idenitfy which transaction types which are fraudulent. In the table below we can clearly see that all fraudulent transaction only comes from two types, TRANSFER and CASH_OUT. The proportion between them is very similar, which we will see the reason for later. This finding helps us to fitler away types which cannot be flagged as fraudulent in this specific case.
+
+```{r, results='asis'}
+
+print(xtable(paysim %>% filter(isFraud == TRUE) %>% group_by(type) %>% summarize(n_fraud = n()), type = .latex), include.rownames=FALSE)
+
+```
+
+Looking at the origin and destination of fraudulent transaction shows us that most destinations and origins appear only once with fraudulent transaction, only 44 destination are used twice for fraudulent transaction. This leads us to suspect the account information is not relevant. Since we are using time series data, a time series partiotioning would be prefereable when training. However, we are not using any account information, meaning that each transaction can be seen as individual. Thus, we can use a regular k-fold partitioning. 
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{ll|l|l|}
+\cline{3-4}
+                                                                                                         &   & \multicolumn{2}{l|}{\begin{tabular}[c]{@{}l@{}}Frequency of fraudulent\\ Transactions\end{tabular}} \\ \cline{3-4} 
+                                                                                                         &   & Origin                                         & Destination                                        \\ \hline
+\multicolumn{1}{|l|}{\multirow{2}{*}{\begin{tabular}[c]{@{}l@{}}Number of \\ transactions\end{tabular}}} & 1 & 8213                                           & 8125                                               \\ \cline{2-4} 
+\multicolumn{1}{|l|}{}                                                                                   & 2 & 0                                              & 44                                                 \\ \hline
+\end{tabular}
+\end{table}
+
+Lastly, I took a quick look at the fraudulent transaction. Doing so I found that the fraudulent transaction happen in a certain way. First the balance is transfered and then directly being extracted, which can be seen in the table below. 
+
+```{r, results = 'asis' }
+
+print(xtable(paysim %>% filter(isFraud == TRUE) %>% head(20), type = .latex), include.rownames=FALSE)
+
+
+```
+
+This lead me to creating an algorithm for calculating a flag, marking a transaction as possibly fraudulent. The algorithm for this was: When a CASH_OUT is being made, check the last hour for transactions of the same amount (Accounts seem to be missmatched or erronous, thus cannot be used to trace the balance). If there is a match, set this flag to TRUE. Then, proceed to mark the TRANSFER made that lead to the CASH_OUT as possibly fraudulent. This approach is intuative to me since the TRANSACTION it self does not seem to cause concern until it leads to a fraudulent transaction. In some sense, it is a sort of back tracing, marking transaction leading to a possibly fraudulent transaction as suspected fraudulent.
+
+Since we want to identify as many fraudulent transactions as possible without predicting false positives, the F1 score was used as the evaluation metric. Also, 5-fold cross validation was used together with a parameter grid to find the optimal set of parameters for the Gradient Boosting Model. The grid used was: $interaction.depth \in [2,4,..,10$, $n.trees\in [25,50,..250]$, $Shrinkage = 0.1$, $n.minobsinnode = 10$.
+
+# Results
+
+The data was split at step 354, resulting in a split with 19,94 % of the dataset being the validation set. 
+
+The best model was reached at 250 boosting iterations, reaching a F1 score 0,97. The plot below shows the F1 score depending on boosting iteration and max tree depth.
+
+```{r}
+plot.train(gbm_fit)
+```
+
+The best model was found using these parameters:
+
+```{r,  results='asis'}
+
+
+print(xtable(gbm_fit$results[best(gbm_fit$results, metric = "F1", maximize = TRUE),], type = .latex), include.rownames=FALSE)
+
+```
+
+Further, we can see in the table below that the suspected fraudulent flag, isSusp, is very important for the model.
+
+```{r,  results='asis'}
+importance <- varImp(gbm_fit)
+print(xtable(importance$importance, type = .latex))
+```
+
+Applying the model on the validation data, we get a F1 score 0,997.By looking at the confussion matrix, we can see that we hae only 24 wrongfully predictions.
+
+
+```{r,  results='asis'}
+c_matrix <- confusionMatrix(data = y_hat, reference = validation$isFraud)
+
+print(xtable(c_matrix$table , type = .latex))
+```
+
+# Conclusion and Discussion
+
+In conclussion, we have seen the difficulty in fraud detection. The data is big, dependant, and often fraudulent transactions are not easily identified when compared to non-frauduelent ones. To be able to identify fraudulent transaction, knowledge about how to create features like flags is crucial for success. 
+
+In this project, I found an algorithm of flagging suspected fraudulent transactions when funds are moved between accounts and cashed out at the same time. By marking the transaction and cash out as suspected fraudulent transactions led to a great success in identifying fraudulent fransaction. 
+
+Further work could be done in creating more features and possibly choose other sampling methods to handle the large imbalance. In the bigger picture, this algorithm can only be applied to this specific case. Therefore, in a business system, more models should be created and/or integrated to identify other fraudulent behaviours.

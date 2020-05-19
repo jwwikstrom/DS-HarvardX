@@ -194,4 +194,4 @@ svd_prediction$pred_rating[svd_prediction$pred_rating<0.5] <- 0.5
 RMSE(validation$rating,svd_prediction$pred_rating)
 
 # Save predictions
-save(svd_prediction, file = "predictions.RData")
+write_csv(svd_prediction, path = "predictions.CSV")
